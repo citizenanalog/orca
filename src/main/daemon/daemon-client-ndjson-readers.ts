@@ -6,7 +6,10 @@ import {
   createBinaryStreamFrameReader,
   type DaemonStreamFraming
 } from './daemon-stream-binary-framing'
-import { attachTurnBoundedSocketReader } from './daemon-stream-ingest-turn-bound'
+import {
+  attachTurnBoundedSocketReader,
+  type TurnBoundedSocketReader
+} from './daemon-stream-ingest-turn-bound'
 import type { DaemonEvent, RpcResponse } from './types'
 
 export function attachControlResponseReader(
@@ -39,7 +42,7 @@ export function attachStreamEventReader(
   socket: Socket,
   { streamFraming, remainder }: StreamEventReaderFraming,
   onEvent: (event: DaemonEvent) => void
-): () => void {
+): TurnBoundedSocketReader {
   if (streamFraming === BINARY_STREAM_FRAMING) {
     const reader = createBinaryStreamFrameReader(onEvent, (error) => socket.destroy(error))
     return attachTurnBoundedSocketReader(socket, (chunk) => reader.feed(chunk), remainder)
