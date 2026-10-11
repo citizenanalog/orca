@@ -9,6 +9,9 @@ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
 import type { RuntimeCommandSurfaceHost } from './orca-runtime-core'
 import { RuntimeBrowserDriverController } from './runtime-browser-driver-controller'
 
+import { RuntimeWorkspaceMetadata } from './workspaces/workspace-metadata'
+import { RuntimeWorkspaceCreation } from './workspaces/workspace-creation'
+import { RuntimeWorkspaceActivation } from './workspaces/workspace-activation'
 import type { StatsCollector } from '../stats/collector'
 import { RuntimeRemoteFetchController } from './runtime-remote-fetch-controller'
 import { RuntimeWorktreeBaseReconciliation } from './runtime-worktree-base-reconciliation'
@@ -159,5 +162,65 @@ export class OrcaRuntimeWithTerminalDrivers extends OrcaRuntimeWithFitOverrideLi
       this.stopPtysForDestructiveWorktreeRemoval(worktreeId, options),
     closeFileWatchersForRemoval: (path) => this.closeFileWatchersForRemoval(path),
     publishWorktreeRemovalChange: (repoId) => this.publishWorktreeRemovalChange(repoId)
+  })
+  protected readonly workspaceActivation = new RuntimeWorkspaceActivation({
+    getStore: () => this.store,
+    assertGraphReady: () => this.assertGraphReady(),
+    resolveWorktreeSelector: (selector) => this.resolveWorktreeSelector(selector),
+    notifyWorktreesChanged: (id) => this.notifyWorktreesChanged(id),
+    notifyHostActivateWorktree: (repoId, worktreeId) =>
+      this.notifyHostActivateWorktree(repoId, worktreeId),
+    notifyClientsActivateWorktree: (...args) => this.notifyClientsActivateWorktree(...args),
+    hydrateHeadlessMobileSessionTabsFromWorkspaceSession: (...args) =>
+      this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(...args),
+    refreshMobileSessionPtyRecords: () => this.refreshMobileSessionPtyRecords(),
+    notifyMobileSessionTabsChanged: (id) => this.notifyMobileSessionTabsChanged(id),
+    getAvailableAuthoritativeWindow: () => this.getAvailableAuthoritativeWindow(),
+    resumeSleepingAgents: (getWorktreeId) => this.notifier?.resumeSleepingAgents?.(getWorktreeId())
+  })
+
+  protected readonly workspaceCreation = new RuntimeWorkspaceCreation({
+    getStore: () => this.store,
+    requireStore: () => this.requireStore(),
+    canSpawn: () => Boolean(this.ptyController?.spawn),
+    hasAuthoritativeWindow: () => this.authoritativeWindowId !== null,
+    resolveRepoSelector: (selector) => this.resolveRepoSelector(selector),
+    buildStartupForAgent: (...args) => this.buildStartupForAgent(...args),
+    buildStartupForDraft: (...args) => this.buildStartupForDraft(...args),
+    resolveLineageForWorktreeCreate: (...args) => this.resolveLineageForWorktreeCreate(...args),
+    recordCreatedWorktreeLineage: (...args) => this.recordCreatedWorktreeLineage(...args),
+    getHostedReviewExecutionOptions: (repo) => this.getHostedReviewExecutionOptions(repo),
+    getLocalGitExecutionOptionArgs: (repo) => this.getLocalGitExecutionOptionArgs(repo),
+    resolveRemoteTrackingBase: (...args) => this.resolveRemoteTrackingBase(...args),
+    hasRemoteTrackingRef: (...args) => this.hasRemoteTrackingRef(...args),
+    getOrStartRemoteTrackingBaseRefresh: (...args) =>
+      this.getOrStartRemoteTrackingBaseRefresh(...args),
+    fetchRemoteWithCache: (...args) => this.fetchRemoteWithCache(...args),
+    shouldProvisionWorktreeInBackground: (navigation) =>
+      this.shouldProvisionWorktreeInBackground(navigation),
+    createTerminal: (...args) => this.createTerminal(...args),
+    pasteStartupDraftWhenReady: (...args) => this.pasteStartupDraftWhenReady(...args),
+    sendStartupFollowupWhenReady: (...args) => this.sendStartupFollowupWhenReady(...args),
+    provisionManagedWorktreeTerminals: (...args) => this.provisionManagedWorktreeTerminals(...args),
+    notifyActivateWorktree: (...args) => this.notifyActivateWorktree(...args),
+    invalidateResolvedWorktreeCache: () => this.invalidateResolvedWorktreeCache(),
+    invalidateWorktreeScanCacheForRepo: (id) => this.invalidateWorktreeScanCacheForRepo(id),
+    notifyWorktreesChanged: (id) => this.notifyWorktreesChanged(id),
+    emitWorktreeLifecycle: (event) => this.emitWorktreeLifecycle(event)
+  })
+  protected readonly workspaceMetadata = new RuntimeWorkspaceMetadata({
+    getStore: () => this.store,
+    resolveRemoteTrackingBase: (...args) => this.resolveRemoteTrackingBase(...args),
+    fetchRemoteWithCache: (...args) => this.fetchRemoteWithCache(...args),
+    requireStore: () => this.requireStore(),
+    resolveRepoSelector: (selector) => this.resolveRepoSelector(selector),
+    resolveWorktreeSelector: (selector) => this.resolveWorktreeSelector(selector),
+    showManagedWorktree: (selector) => this.showManagedWorktree(selector),
+    invalidateResolvedWorktreeCache: () => this.invalidateResolvedWorktreeCache(),
+    invalidateWorktreeScanCacheForRepo: (id) => this.invalidateWorktreeScanCacheForRepo(id),
+    notifyWorktreesChanged: (...args) => this.notifyWorktreesChanged(...args),
+    getRemoteFetches: () => this.remoteFetches,
+    getWorktreeBaseReconciliation: () => this.worktreeBaseReconciliation,
+    getWorktreeLineage: () => this.worktreeLineage
   })
 }

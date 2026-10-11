@@ -15,8 +15,6 @@ src/main/runtime/orca-runtime-close-structured-agent-session-tab.ts
 src/main/runtime/orca-runtime-collect-mobile-visible-graph-changed-worktrees.ts
 src/main/runtime/orca-runtime-controller-knows-pty-is-live.ts
 src/main/runtime/orca-runtime-create-agent-session.ts
-src/main/runtime/orca-runtime-create-managed-remote-worktree.ts
-src/main/runtime/orca-runtime-create-managed-worktree.ts
 src/main/runtime/orca-runtime-create-mobile-session-terminal.ts
 src/main/runtime/orca-runtime-create-runtime-owned-mobile-session-terminal.ts
 src/main/runtime/orca-runtime-create-terminal-desktop.ts
