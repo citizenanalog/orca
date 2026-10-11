@@ -6,6 +6,7 @@ import {
   createBinaryStreamFrameReader,
   type DaemonStreamFraming
 } from './daemon-stream-binary-framing'
+import { attachTurnBoundedSocketReader } from './daemon-stream-ingest-turn-bound'
 import type { DaemonEvent, RpcResponse } from './types'
 
 export function attachControlResponseReader(
@@ -41,11 +42,7 @@ export function attachStreamEventReader(
 ): () => void {
   if (streamFraming === BINARY_STREAM_FRAMING) {
     const reader = createBinaryStreamFrameReader(onEvent, (error) => socket.destroy(error))
-    const onFrameData = (chunk: Buffer) => reader.feed(chunk)
-    socket.on('data', onFrameData)
-    reader.feed(remainder)
-    socket.resume()
-    return () => socket.off('data', onFrameData)
+    return attachTurnBoundedSocketReader(socket, (chunk) => reader.feed(chunk), remainder)
   }
   // Why: PTY output streams include emoji/box-drawing tables; socket chunks
   // can split those UTF-8 sequences across packets.
@@ -59,10 +56,9 @@ export function attachStreamEventReader(
     },
     () => {} // Ignore parse errors on stream socket
   )
-
-  const onData = (chunk: Buffer) => parser.feed(decoder.write(chunk))
-  socket.on('data', onData)
-  onData(remainder)
-  socket.resume()
-  return () => socket.off('data', onData)
+  return attachTurnBoundedSocketReader(
+    socket,
+    (chunk) => parser.feed(decoder.write(chunk)),
+    remainder
+  )
 }
