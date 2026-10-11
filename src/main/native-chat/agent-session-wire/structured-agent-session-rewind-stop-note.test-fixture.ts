@@ -100,9 +100,10 @@ export async function expectRawStopNoteRewindRecovery({
       hostTestAttachParams(store.getRecord(HOST_TEST_SESSION)!.lease.runtimeFence)
     )
   ).toMatchObject({ ok: true })
-  // A restarted child settles the rewind in its start, which runs after the attach.
-  await host.collaboratorsForTests().serialize(HOST_TEST_SESSION, async () => {})
-  expect(store.getRecord(HOST_TEST_SESSION)?.rewind?.phase).toBe('completed')
+  // A restarted child settles the rewind outside the attach's serialized step.
+  await vi.waitFor(() =>
+    expect(store.getRecord(HOST_TEST_SESSION)?.rewind?.phase).toBe('completed')
+  )
   expect(journal.itemBody(noteId)).toEqual(unconfirmed)
   expect(journal.snapshot().items.find((item) => item.itemId === noteId)?.body).toEqual({
     kind: 'status',

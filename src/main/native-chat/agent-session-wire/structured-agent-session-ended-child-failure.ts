@@ -10,7 +10,8 @@ import type {
 function providerEndFailure(
   ended: StructuredAgentSessionEndedChild
 ): StructuredAgentSessionStartFailureCause {
-  if (ended.duringStartup) {
+  // An observed protocol start followed by exit failed delivery, even if indexing lagged both.
+  if (ended.duringStartup && !ended.providerStartedBeforePublication) {
     return { exit: ended.failure }
   }
   return { failure: ended.failure ?? agentSessionFailureFact('providerExited') }

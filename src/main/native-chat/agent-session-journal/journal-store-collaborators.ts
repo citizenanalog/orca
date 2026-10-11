@@ -66,6 +66,7 @@ export function createJournalStoreCollaborators(host: JournalStoreHost): Journal
     mintEpoch: host.mintEpoch,
     serialize: host.serialize,
     database: host.database,
+    state: host.state,
     readOnly: host.readOnly,
     highestFence: () => host.state().highestFence,
     queuePauseRestatement: () =>

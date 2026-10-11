@@ -10,7 +10,6 @@ import type {
   StructuredAgentSessionHostDeps,
   StructuredAgentSessionProviderChildIdentity
 } from './structured-agent-session-host-types'
-import type { StructuredAgentSessionAcquireAborts } from './structured-agent-session-acquire-aborts'
 import type { StructuredAgentSessionOptionRevisions } from './structured-agent-session-option-revisions'
 
 const APPLY_ORDER = ['model', 'effort']
@@ -35,6 +34,7 @@ export function structuredAgentSessionStartupIntentWrites(
 export type StructuredAgentSessionStartupIntentOutcome = {
   aborted: boolean
   failed: string[]
+  consumedRevision: number
 }
 
 /** Applies the intent, each write under the start's own abort (the startup limit included). A write
@@ -42,52 +42,50 @@ export type StructuredAgentSessionStartupIntentOutcome = {
 export async function applyStructuredAgentSessionStartupIntent(
   context: {
     deps: Pick<StructuredAgentSessionHostDeps, 'adapter' | 'store' | 'logger'>
-    acquireAborts: Pick<StructuredAgentSessionAcquireAborts, 'begin'>
-    optionRevisions: Pick<StructuredAgentSessionOptionRevisions, 'advance'>
+    signal: AbortSignal
+    optionRevisions: Pick<StructuredAgentSessionOptionRevisions, 'advance' | 'current'>
   },
   sessionId: string,
   child: StructuredAgentSessionProviderChildIdentity,
   launched: Readonly<Record<string, string>>
 ): Promise<StructuredAgentSessionStartupIntentOutcome> {
+  const revision = context.optionRevisions.current(sessionId)
   const writes = structuredAgentSessionStartupIntentWrites(
     launched,
     context.deps.store.getRecord(sessionId)?.options
   )
   const failed: string[] = []
   if (writes.length === 0) {
-    return { aborted: false, failed }
+    return { aborted: context.signal.aborted, failed, consumedRevision: revision }
   }
-  const wait = context.acquireAborts.begin(sessionId)
-  try {
-    for (const [key, value] of writes) {
-      if (wait.signal.aborted) {
-        break
-      }
-      try {
-        await context.deps.adapter.setOption({
-          sessionId,
-          key,
-          value,
-          fence: child.fence,
-          signal: wait.signal
-        })
-      } catch (error) {
-        failed.push(key)
-        context.deps.logger.warn('applying a pick made while the agent started failed', {
-          scope: 'startup-intent',
-          sessionId,
-          key,
-          error
-        })
-      } finally {
-        // As a ready child's pick: whatever the write's outcome, a report read before it is stale.
-        context.optionRevisions.advance(sessionId)
-      }
+  let ownAdvances = 0
+  for (const [key, value] of writes) {
+    if (context.signal.aborted) {
+      break
     }
-    return { aborted: wait.signal.aborted, failed }
-  } finally {
-    wait.end()
+    try {
+      await context.deps.adapter.setOption({
+        sessionId,
+        key,
+        value,
+        fence: child.fence,
+        signal: context.signal
+      })
+    } catch (error) {
+      failed.push(key)
+      context.deps.logger.warn('applying a pick made while the agent started failed', {
+        scope: 'startup-intent',
+        sessionId,
+        key,
+        error
+      })
+    } finally {
+      // As a ready child's pick: whatever the write's outcome, a report read before it is stale.
+      context.optionRevisions.advance(sessionId)
+      ownAdvances += 1
+    }
   }
+  return { aborted: context.signal.aborted, failed, consumedRevision: revision + ownAdvances }
 }
 
 /** A pick the child refused is shown as what the child runs, never left showing a value it does

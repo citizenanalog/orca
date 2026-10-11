@@ -78,9 +78,6 @@ async function send(
     value: { submission: { dispatchState: 'pending', handoverRecorded: true } }
   })
   const clientMessageId = sent.ok ? sent.value.clientMessageId : ''
-  await eventually(() =>
-    expect(host.collaboratorsForTests().conversationDelivery.loop.isRunning(SESSION)).toBe(false)
-  )
   return clientMessageId
 }
 
@@ -197,7 +194,7 @@ describe('a send into a published session whose child ended before startup', () 
     const first = await send('hello again', releasedFence)
 
     // Accepted at the lost owner's fence, held for the child delivery started.
-    expect(acquire).toHaveBeenCalledTimes(2)
+    await eventually(() => expect(acquire).toHaveBeenCalledTimes(2))
     expect(store.getRecord(SESSION)?.lease.claimStatus).toBe('live')
     expect(dispatch).not.toHaveBeenCalled()
     const current = store.getRecord(SESSION)?.lease.runtimeFence ?? 0
@@ -225,6 +222,7 @@ describe('a send into a published session whose child ended before startup', () 
     const rowsBefore = (await journalStatuses()).length
 
     const held = await send('still not signed in', releasedFence)
+    await eventually(() => expect(acquire).toHaveBeenCalledTimes(2))
     await exitBeforeProof()
 
     // The child never proved its start, so it was handed nothing: the message is rejected, so
@@ -260,7 +258,7 @@ describe('a send into a published session whose child ended before startup', () 
 
     // Retry is a fresh action: it restarts once and is handed to the new child once it proves itself.
     const retry = await send('signed in now')
-    expect(acquire).toHaveBeenCalledTimes(3)
+    await eventually(() => expect(acquire).toHaveBeenCalledTimes(3))
     await proveStarted()
     await handedOver(retry)
     expect(dispatch).toHaveBeenCalledOnce()

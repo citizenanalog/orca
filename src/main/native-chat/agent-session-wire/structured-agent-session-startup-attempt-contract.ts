@@ -26,7 +26,7 @@ export type StructuredAgentSessionStartupAttempt = {
   readonly spawnToken: string
   /** Where and as whom the record pins the start; an adapter never re-resolves either. */
   readonly launch: Pick<AgentSessionRecord, 'location' | 'accountHome' | 'launchDirectory'>
-  /** The saved options the start launches with, as intent; never a catalog guess. */
+  /** The accepted conversation values this child launches with; never a catalog guess. */
   readonly options?: Readonly<Record<string, string>>
   /** Provider events may begin before acquisition returns. */
   readonly events?: StructuredAgentSessionEventSink

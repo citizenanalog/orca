@@ -10,6 +10,7 @@ import {
   openTestJournalHostDatabase
 } from './journal-host-database-test-support'
 import { replaceJournalEpoch } from './journal-epoch-replacement'
+import { createJournalReducerState } from './journal-reducer'
 import { runJournalTransaction } from './journal-database'
 import {
   deleteJournalEpochRows,
@@ -172,6 +173,7 @@ describe('command receipts across epoch replacement', () => {
       reason: 'legacy_import',
       fence: 0,
       items: [],
+      priorState: createJournalReducerState(identity.sessionId, 'epoch-1'),
       queuePause: { lifted: false, liveStop: null, reopened: false },
       now: () => 2000,
       mintEpoch: () => 'epoch-2',

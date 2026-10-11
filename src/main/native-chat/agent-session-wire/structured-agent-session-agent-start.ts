@@ -1,9 +1,8 @@
 // Giving a session its provider child back.
 //
 // Only work starts one: the delivery loop for a queued message, and the few operations that need
-// the provider itself — never a view, and never the app launching. It runs inside the session's
-// serialize, with the attach it is given, so the eligibility it reads is the one the attach acts
-// on.
+// the provider itself — never a view, and never the app launching. The attach still serializes
+// its short ownership transitions while the provider handshake runs outside that lane.
 
 import {
   providerDiagnosticOf,
@@ -15,11 +14,9 @@ import {
   agentSessionRefusalFromReference,
   readAgentSessionRefusalReference,
   refuse,
-  refuseUnclassified,
   type AgentSessionRefusalDetailsByCode,
   type AgentSessionWireRefusalCode
 } from '../../../shared/agent-session-wire-refusals'
-import { agentSessionWriteNoticeEnglish } from '../../../shared/agent-session-refusal-notice'
 import type {
   AgentSessionAttachResult,
   AgentSessionMutationResult,
@@ -57,13 +54,38 @@ export type StructuredAgentSessionResumeOutcome =
       argumentProblem?: AgentSessionArgumentProblem
     }
 
+/** Concurrent callers join one start; a later call may retry after it settles. */
+export function memoizedEnsureStructuredAgentSessionAgent(
+  starts: Map<string, Promise<StructuredAgentSessionResumeOutcome>>,
+  acquireAborts: StructuredAgentSessionAttachContext['runtimeState']['acquireAborts'],
+  context: () => StructuredAgentSessionAttachContext,
+  sessionId: string,
+  startedFor?: string
+): Promise<StructuredAgentSessionResumeOutcome> {
+  const pending = starts.get(sessionId)
+  if (pending) {
+    return pending
+  }
+  const reservation = acquireAborts.begin(sessionId)
+  const start = ensureStructuredAgentSessionAgent(context(), sessionId, startedFor)
+  starts.set(sessionId, start)
+  void start
+    .finally(() => {
+      reservation.end()
+      if (starts.get(sessionId) === start) {
+        starts.delete(sessionId)
+      }
+    })
+    .catch(() => undefined)
+  return start
+}
+
 /** The attach's caller key: the ledger row a start settles is Orca's own. */
 const AGENT_START_CALLER_KEY = 'trusted-local:agent-start'
 
 /**
- * Gives the session a provider child if it has none, for a caller inside its serialize — which is
- * what makes "if it has none" exact: two askers run this in turn, and the second finds the first
- * one's child. A failed start leaves the next asker to make its own.
+ * Gives the session a provider child if it has none. The host coalesces concurrent calls; a
+ * failed start leaves the next asker to make its own.
  */
 export async function ensureStructuredAgentSessionAgent(
   context: StructuredAgentSessionAttachContext,
@@ -88,28 +110,6 @@ export async function ensureStructuredAgentSessionAgent(
     { reason: 'noProviderChild' },
     'The session attached without a provider child to write to.'
   )
-}
-
-/** The same, for an operation's admission: a start that throws is that operation's refusal. */
-export function ensureStructuredAgentSessionAgentForOperation(
-  context: StructuredAgentSessionAttachContext,
-  sessionId: string
-): Promise<StructuredAgentSessionResumeOutcome> {
-  return ensureStructuredAgentSessionAgent(context, sessionId).catch((error: unknown) => {
-    // The error is Orca's own and goes to the log; the refusal says only that the start failed.
-    context.deps.logger.warn('starting the agent for an operation failed', {
-      scope: 'operation-agent-start',
-      sessionId,
-      error
-    })
-    return {
-      ok: false,
-      refusal: refuseUnclassified(
-        'agent_session_owner_restart_failed',
-        agentSessionWriteNoticeEnglish(['restartFailed'])
-      )
-    }
-  })
 }
 
 async function startStructuredAgentSessionAgent(

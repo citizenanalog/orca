@@ -18,12 +18,13 @@ let expired: StructuredAgentSessionExpiredStartup[]
 let settled: StructuredAgentSessionStartupSettled[]
 let attempts: StructuredAgentSessionStartupAttempts
 
-function mint() {
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the mint reads only the lease fence, location, account home and options this literal sets.
+function mint(optionFields: Pick<AgentSessionRecord, 'options'> = {}) {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the mint reads only the lease fence, location, account home and option fields this literal sets.
   const record = {
     lease: { runtimeFence: CHILD.fence },
     location: { executionHostId: 'local', workspaceId: 'workspace-1' },
-    accountHome: { variable: 'CODEX_HOME', path: '/home/dev/.codex' }
+    accountHome: { variable: 'CODEX_HOME', path: '/home/dev/.codex' },
+    ...optionFields
   } as unknown as AgentSessionRecord
   return mintStructuredAgentSessionStartupAttempt({
     record,
@@ -54,6 +55,77 @@ beforeEach(() => {
   attempts = new StructuredAgentSessionStartupAttempts({
     expire: (startup) => expired.push(startup),
     settled: (startup) => settled.push(startup)
+  })
+})
+
+describe('attempt-owned readiness', () => {
+  it('shares one result across callers and a rebuilt child record', async () => {
+    const attempt = mint()
+    attempts.track(SESSION, attempt)
+    attempts.published(SESSION, attempt.attemptId, CHILD)
+    const first = attempts.wait(SESSION, attempt.attemptId, CHILD)
+    const second = attempts.wait(SESSION, attempt.attemptId, { ...CHILD })
+
+    expect(first).toBe(second)
+    attempts.ready(SESSION, CHILD)
+    await expect(first).resolves.toEqual(CHILD)
+    await expect(second).resolves.toEqual(CHILD)
+  })
+
+  it('rejects the ended attempt and never lets its late proof resolve a replacement', async () => {
+    const first = mint()
+    attempts.track(SESSION, first)
+    attempts.published(SESSION, first.attemptId, CHILD)
+    const waiting = attempts.wait(SESSION, first.attemptId, CHILD)
+    attempts.childEnded(SESSION, CHILD)
+    await expect(waiting).rejects.toMatchObject({ attemptId: first.attemptId })
+
+    const next = mint()
+    const nextChild = { generation: 'generation-2', fence: CHILD.fence }
+    attempts.track(SESSION, next)
+    attempts.published(SESSION, next.attemptId, nextChild)
+    const nextWaiting = attempts.wait(SESSION, next.attemptId, nextChild)
+    attempts.ready(SESSION, CHILD)
+    expect(attempts.isOpen(SESSION)).toBe(true)
+    attempts.ready(SESSION, nextChild)
+    await expect(nextWaiting).resolves.toEqual(nextChild)
+  })
+
+  it('lets the caller stop waiting without ending the host attempt', async () => {
+    const attempt = mint()
+    attempts.track(SESSION, attempt)
+    attempts.published(SESSION, attempt.attemptId, CHILD)
+    const waiting = attempts.wait(SESSION, attempt.attemptId, CHILD, 25)
+    vi.advanceTimersByTime(25)
+
+    await expect(waiting).rejects.toMatchObject({
+      name: 'StructuredAgentSessionStartWaitExpiredError'
+    })
+    expect(attempts.isOpen(SESSION)).toBe(true)
+    attempts.ready(SESSION, CHILD)
+    expect(attempts.isOpen(SESSION)).toBe(false)
+  })
+
+  it('retains a prepublication report only for the child this attempt publishes', async () => {
+    const attempt = mint()
+    attempts.track(SESSION, attempt)
+    const matching = attempts.reportReady(SESSION, CHILD)
+    const stale = attempts.reportReady(SESSION, { ...CHILD, generation: 'old' })
+    expect(matching).not.toBeNull()
+    expect(stale).not.toBeNull()
+    attempts.published(SESSION, attempt.attemptId, CHILD)
+    attempts.ready(SESSION, CHILD)
+    await expect(matching).resolves.toBe(true)
+    await expect(stale).resolves.toBe(false)
+  })
+
+  it('drops a joined report when its child ends before readiness', async () => {
+    const attempt = mint()
+    attempts.track(SESSION, attempt)
+    const report = attempts.reportReady(SESSION, CHILD)
+    attempts.published(SESSION, attempt.attemptId, CHILD)
+    attempts.childEnded(SESSION, CHILD)
+    await expect(report).resolves.toBe(false)
   })
 })
 

@@ -24,24 +24,20 @@ import {
   mutateStructuredAgentSession,
   type StructuredAgentSessionMutationContext
 } from './structured-agent-session-mutation-context'
-import {
-  openForProviderWrite,
-  openWithAgent,
-  sendPreparation,
-  structuredAgentSessionSendBlock
-} from './structured-agent-session-send-preparation'
+import { openForProviderWrite, sendPreparation } from './structured-agent-session-send-preparation'
 import {
   cancelPlan,
   promptPlan,
   sendPlan,
-  setOptionPlan,
-  type MutationPlan
+  setOptionPlan
 } from './structured-agent-session-mutation-plans'
-import { agentSessionMutationAdmitsNow } from './structured-agent-session-mutation-admits-now'
 import { runQueueableStructuredAgentSessionSend } from './structured-agent-session-queued-send'
 import { cancelStructuredAgentSessionPrompt } from './structured-agent-session-prompt-cancel'
-import { mutateWithChatStop } from './structured-agent-session-chat-stop'
-import { runAfterProviderStart } from './structured-agent-session-provider-start-hold'
+import { abortAcquireForStop, mutateWithChatStop } from './structured-agent-session-chat-stop'
+import {
+  openWithReadyStructuredAgentSessionChild,
+  prepareReadyStructuredAgentSessionOperation
+} from './structured-agent-session-ready-operation'
 import { performSetOption } from './structured-agent-session-turns-options'
 export type { StructuredAgentSessionMutationContext } from './structured-agent-session-mutation-context'
 import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
@@ -74,25 +70,16 @@ export function sendStructuredAgentSessionTurn(
   arrival?: Parameters<typeof sendPreparation>[2]
 ): Promise<AgentSessionMutationResult<AgentSessionSendResult>> {
   const plan = sendPlan(params)
-  return runAfterProviderStart(context, params.envelope.sessionId, () =>
-    mutateStructuredAgentSession(
-      context,
-      caller,
-      params.envelope,
-      {
-        ...plan,
-        run: (ctx) =>
-          runQueueableStructuredAgentSessionSend(
-            context,
-            ctx,
-            params,
-            async () =>
-              structuredAgentSessionSendBlock(context.deps.store.getRecord(ctx.sessionId)) ??
-              (await plan.run(ctx))
-          )
-      },
-      sendPreparation(context, params.envelope, arrival)
-    )
+  return mutateStructuredAgentSession(
+    context,
+    caller,
+    params.envelope,
+    {
+      ...plan,
+      run: (ctx) =>
+        runQueueableStructuredAgentSessionSend(context, ctx, params, () => plan.run(ctx))
+    },
+    sendPreparation(context, params.envelope, arrival)
   )
 }
 
@@ -133,31 +120,6 @@ export function cancelStructuredAgentSessionTurn(
         )
       : stop().then(({ outcome }) => outcome)
   )
-}
-
-/** A Stop must not wait behind a start the provider may never answer: the start the session's
- *  queue is waiting on stops now, as a close's does, and the Stop's own step then finds no child.
- *  Only a Stop admission would run now; one naming a turn is about a child already gone, so it
- *  leaves a newer start alone. */
-function abortAcquireForStop(
-  context: StructuredAgentSessionMutationContext,
-  caller: StructuredAgentSessionCaller,
-  envelope: AgentSessionMutationEnvelope,
-  plan: MutationPlan<AgentSessionCancelResult>
-): void {
-  const { store } = context.deps
-  if (
-    !agentSessionMutationAdmitsNow({
-      store,
-      callerKey: caller.callerKey,
-      envelope,
-      plan,
-      now: context.now
-    })
-  ) {
-    return
-  }
-  context.acquireAborts.abort(envelope.sessionId, 'stopped while starting')
 }
 
 export function respondToStructuredAgentSessionPrompt(
@@ -217,22 +179,35 @@ export async function setStructuredAgentSessionOption(
   )
 }
 
-export function changeStructuredAgentSessionThreadGoal(
+export async function changeStructuredAgentSessionThreadGoal(
   context: StructuredAgentSessionMutationContext,
   caller: StructuredAgentSessionCaller,
   params: { envelope: AgentSessionMutationEnvelope; change: AgentSessionThreadGoalChange }
 ): Promise<AgentSessionMutationResult<AgentSessionThreadGoalResult>> {
-  return runAfterProviderStart(context, params.envelope.sessionId, () =>
-    mutateStructuredAgentSession(
+  const plan = threadGoalPlan(params)
+  const unsupported = refuseThreadGoalUnsupported(
+    context.deps.adapter,
+    context.deps.agents,
+    context.deps.store.getRecord(params.envelope.sessionId)?.provider
+  )
+  const ready =
+    unsupported ??
+    (await prepareReadyStructuredAgentSessionOperation(
       context,
-      caller,
+      caller.callerKey,
       params.envelope,
-      threadGoalPlan(params),
-      // An agent without goals answers so at once, with no start to wait out.
-      openWithAgent(context, params.envelope, (record) =>
-        refuseThreadGoalUnsupported(context.deps.adapter, context.deps.agents, record?.provider)
-      )
-    )
+      plan.method,
+      plan.fields
+    ))
+  if (!ready.ok) {
+    return ready
+  }
+  return mutateStructuredAgentSession(
+    context,
+    caller,
+    params.envelope,
+    plan,
+    openWithReadyStructuredAgentSessionChild(context, params.envelope, ready.child)
   )
 }
 

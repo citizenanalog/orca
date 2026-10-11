@@ -11,10 +11,20 @@ import type {
   AgentSessionJournalIdentity
 } from '../../../shared/agent-session-journal-types'
 import { agentSessionJournalProviderHandle } from '../../../shared/agent-session-provider-handle-encoding'
+import { agentJournalSubmissionKey } from '../../../shared/agent-session-journal-item-key'
+import { isQueuedAgentJournalSubmission } from '../../../shared/agent-session-queued-submission'
 import type { JournalHostDatabase } from './journal-host-database'
 import type { JournalLoad } from './journal-open'
-import { applyJournalRow, createJournalReducerState } from './journal-reducer'
-import { buildJournalItemRow, journalRowBase } from './journal-row-builders'
+import {
+  applyJournalRow,
+  createJournalReducerState,
+  type JournalReducerState
+} from './journal-reducer'
+import {
+  buildJournalItemRow,
+  buildJournalSubmissionRow,
+  journalRowBase
+} from './journal-row-builders'
 import {
   buildJournalQueueReopenRow,
   buildJournalQueueClearRow,
@@ -46,6 +56,7 @@ export function replaceJournalEpoch(input: {
   reason: AgentJournalEpochReason
   fence: number
   items: readonly JournalReplacementItem[]
+  priorState: JournalReducerState
   /** Restated in the new epoch, or the rewind would release cards the person stopped, or bring
    *  back a /clear pause they already lifted. */
   queuePause: JournalQueuePauseRestatement
@@ -78,6 +89,37 @@ export function replaceJournalEpoch(input: {
     assertJournalFence(row.fence, state.highestFence)
     applyJournalRow(state, row)
     rows.push(row)
+  }
+  if (input.reason === 'handle_forked') {
+    for (const submission of input.priorState.submissions.values()) {
+      if (!isQueuedAgentJournalSubmission(submission)) {
+        continue
+      }
+      const body = input.priorState.items.get(
+        agentJournalSubmissionKey(submission.clientMessageId)
+      )?.body
+      if (body?.kind !== 'message') {
+        throw new Error('journal_queued_submission_body_missing_at_rewind')
+      }
+      const row = buildJournalSubmissionRow({
+        state,
+        clientMessageId: submission.clientMessageId,
+        payloadFingerprint: submission.payloadFingerprint,
+        providerHandle: agentSessionJournalProviderHandle(input.identity),
+        body,
+        seq: state.lastSequence + 1,
+        fence: input.fence,
+        ts: submission.submittedAt,
+        handoverRecorded: true,
+        ...(submission.queuedMessageId ? { queuedMessageId: submission.queuedMessageId } : {}),
+        ...(submission.origin ? { origin: submission.origin } : {}),
+        ...(submission.source?.kind === 'agent' || submission.source?.kind === 'user'
+          ? { source: { kind: submission.source.kind } }
+          : {})
+      })
+      applyJournalRow(state, row)
+      rows.push(row)
+    }
   }
   const { lifted, liveStop, reopened } = input.queuePause
   const place = () => ({ state, seq: state.lastSequence + 1, fence: input.fence, ts: input.now() })

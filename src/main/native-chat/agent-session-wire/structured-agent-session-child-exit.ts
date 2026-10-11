@@ -42,6 +42,7 @@ export type StructuredAgentSessionChildExit = {
   observedAt?: number
   startupUnproven?: true
   startupUnanswered?: true
+  providerStartedBeforePublication?: true
 }
 
 export type StructuredAgentSessionChildExitSession = Pick<
@@ -83,7 +84,8 @@ export function settleStructuredAgentSessionChildExit<
   TSession extends StructuredAgentSessionChildExitSession
 >(
   context: StructuredAgentSessionChildExitContext<TSession>,
-  event: StructuredAgentSessionEndedEvent
+  event: StructuredAgentSessionEndedEvent,
+  providerStartedBeforePublication = false
 ): Promise<void> {
   return context.serialize(event.sessionId, async () => {
     const child = context.sessions.get(event.sessionId)?.child
@@ -96,7 +98,10 @@ export function settleStructuredAgentSessionChildExit<
       ...(event.failure ? { failure: event.failure } : {}),
       ...(event.observedAt === undefined ? {} : { observedAt: event.observedAt }),
       ...(event.startupUnproven ? { startupUnproven: event.startupUnproven } : {}),
-      ...(event.startupUnanswered ? { startupUnanswered: event.startupUnanswered } : {})
+      ...(event.startupUnanswered ? { startupUnanswered: event.startupUnanswered } : {}),
+      ...(providerStartedBeforePublication
+        ? { providerStartedBeforePublication: true as const }
+        : {})
     })
   })
 }
@@ -155,6 +160,9 @@ export async function endExitedStructuredAgentSessionChildUnderSerialize<
       reason: expected ? (close?.reason ?? null) : exit.reason,
       ...(!expected && exit.failure ? { failure: exit.failure } : {}),
       duringStartup: exitedDuringStartup,
+      ...(exit.providerStartedBeforePublication
+        ? { providerStartedBeforePublication: true as const }
+        : {}),
       // The adapter publishes an exit only once it saw the root go, first-hand or proven.
       rootGone: true,
       ...(expected && close ? { endedAt: close.requestedAt } : {})

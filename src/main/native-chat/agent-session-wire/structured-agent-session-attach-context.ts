@@ -37,6 +37,8 @@ export type StructuredAgentSessionAttachContext = {
   /** Joining a stop's close ends the child's record through the one exit handler. */
   endExitedChild: StructuredAgentSessionLifetimeContext['endExitedChild']
   wakeDelivery?: StructuredAgentSessionLifetimeContext['wakeDelivery']
+  onChildPublished?: (sessionId: string) => void
+  onChildAbandoned?: (sessionId: string) => void
   /** The conversation's one open journal, opened when closed; see `conversation-open`. */
   openConversation: (
     sessionId: string,

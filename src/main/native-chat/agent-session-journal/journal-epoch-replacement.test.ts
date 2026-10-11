@@ -1,4 +1,5 @@
 import { AGENT_JOURNAL_THREAD_SCOPE } from '../../../shared/agent-session-journal-types'
+import { agentJournalSubmissionKey } from '../../../shared/agent-session-journal-item-key'
 // Republishing an epoch is ONE transaction.
 
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -11,6 +12,7 @@ import type {
 } from '../../../shared/agent-session-journal-types'
 import type { JournalHostDatabase } from './journal-host-database'
 import { replaceJournalEpoch } from './journal-epoch-replacement'
+import { createJournalReducerState } from './journal-reducer'
 import type { JournalLoad } from './journal-open'
 import type { AgentSessionJournal } from './journal-store'
 import { readJournalSessionEpoch } from './journal-row-table'
@@ -68,6 +70,7 @@ function replace(input: {
     reason: 'legacy_import',
     fence: 1,
     items: input.items,
+    priorState: createJournalReducerState(IDENTITY.sessionId, 'prior-epoch'),
     queuePause: { lifted: false, liveStop: null, reopened: false },
     now,
     mintEpoch: () => `epoch-${clock}`,
@@ -92,6 +95,35 @@ afterEach(async () => {
 })
 
 describe('journal epoch replacement', () => {
+  it('keeps a send accepted during an uncertain rewind queued in the new epoch', async () => {
+    const journal = await journals.open({ identity: IDENTITY, stateDirectory: root })
+    await journal.appendSubmission({
+      clientMessageId: 'held-during-rewind',
+      payloadFingerprint: 'fingerprint',
+      body: { kind: 'message', role: 'user', blocks: [] },
+      fence: 1,
+      handoverRecorded: true,
+      origin: 'client'
+    })
+    const before = journal.epoch
+
+    await journal.replaceEpochItems('handle_forked', 1, [])
+
+    expect(journal.epoch).not.toBe(before)
+    expect(journal.submissions()).toEqual([
+      expect.objectContaining({
+        clientMessageId: 'held-during-rewind',
+        dispatchState: 'pending',
+        handoverRecorded: true,
+        origin: 'client'
+      })
+    ])
+    expect(journal.itemBody(agentJournalSubmissionKey('held-during-rewind'))).toMatchObject({
+      kind: 'message',
+      role: 'user'
+    })
+  })
+
   it('publishes one observable replacement', () => {
     const published: JournalLoad[] = []
 

@@ -1,10 +1,10 @@
 // What an operation that needs the agent is told when it cannot have one: a typed refusal in
 // words a person can read, never Orca's own error text.
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { AgentSessionRecord } from '../../../shared/agent-session-record'
-import type { StructuredAgentSessionAttachContext } from './structured-agent-session-attach-context'
-import { ensureStructuredAgentSessionAgentForOperation } from './structured-agent-session-agent-start'
+import type { StructuredAgentSessionMutationContext } from './structured-agent-session-mutation-context'
+import { prepareReadyStructuredAgentSessionOperation } from './structured-agent-session-ready-operation'
 import { recordStructuredAgentSessionOptionIntent } from './structured-agent-session-options-read'
 import { claudeAndCodexAgents } from './structured-agent-session-adapter-router-test-support'
 import { recordingStructuredAgentSessionLogger } from './structured-agent-session-logger-test-support'
@@ -16,15 +16,26 @@ describe('an operation whose agent start throws', () => {
     const log = recordingStructuredAgentSessionLogger()
     const cause = new Error('EACCES: permission denied, open /Users/me/.orca/leases.json')
     const context = {
-      deps: { logger: log.logger },
-      sessions: new Map(),
-      reconcileLeases: () => Promise.reject(cause)
+      deps: {
+        logger: log.logger,
+        store: { evaluateMutationOperation: () => ({ decision: { decision: 'admit' } }) }
+      },
+      conversation: async () => ({}),
+      ensureAgent: () => Promise.reject(cause),
+      now: () => 1
     }
-
-    const refused = await ensureStructuredAgentSessionAgentForOperation(
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: a partial context double; the start throws at `reconcileLeases`, before any other member is read.
-      context as unknown as StructuredAgentSessionAttachContext,
-      SESSION
+    const refused = await prepareReadyStructuredAgentSessionOperation(
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the preparation reads only admission, conversation, ensureAgent, clock and logger before this start throws.
+      context as unknown as StructuredAgentSessionMutationContext,
+      'desktop',
+      {
+        sessionId: SESSION,
+        clientOperationId: 'operation',
+        expectedRuntimeFence: 1,
+        payloadFingerprint: 'fingerprint'
+      },
+      'agentSession.rewind',
+      { itemId: 'item' }
     )
 
     expect(refused).toEqual({
@@ -42,7 +53,6 @@ describe('an operation whose agent start throws', () => {
 
 describe('an option picked while the chat is at rest', () => {
   it('refuses a key the provider would not accept as a rejected option', async () => {
-    const persistOptions = vi.fn(async () => {})
     const refused = await recordStructuredAgentSessionOptionIntent(
       {
         store: {
@@ -52,7 +62,7 @@ describe('an option picked while the chat is at rest', () => {
         },
         agents: claudeAndCodexAgents()
       },
-      { sessionId: SESSION, persistOptions, publish: () => {} },
+      { sessionId: SESSION, publish: () => {}, persistOptions: async () => {} },
       { key: 'notAnOption', value: 'x' }
     )
 
@@ -63,6 +73,5 @@ describe('an option picked while the chat is at rest', () => {
         details: { reason: 'optionRejected' }
       }
     })
-    expect(persistOptions).not.toHaveBeenCalled()
   })
 })

@@ -10,8 +10,8 @@ import { admitAndRunAgentSessionMutation } from './structured-agent-session-muta
 import { agentSessionOperationKey } from '../../../shared/agent-session-operation-ledger'
 import type { StructuredAgentSessionMutationContext } from './structured-agent-session-host-mutations'
 import { sendPreparation } from './structured-agent-session-send-preparation'
-import { runAfterProviderStart } from './structured-agent-session-provider-start-hold'
 import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
+import { prepareReadyStructuredAgentSessionOperation } from './structured-agent-session-ready-operation'
 import { conversationCommandBlocked } from './structured-conversation-command-admission'
 import type { AgentSessionFailureFact } from '../../../shared/agent-session-failure'
 import {
@@ -44,15 +44,26 @@ export type ConversationCommandParams = {
   userSend?: true
 }
 /** Stop the provider and record a fresh-context boundary in the same conversation. */
-export function runStructuredConversationCommand(
+export async function runStructuredConversationCommand(
   context: StructuredAgentSessionMutationContext,
   caller: StructuredAgentSessionCaller,
   params: ConversationCommandParams
 ): Promise<AgentSessionMutationResult<AgentSessionConversationCommandResult>> {
-  // A rewind in doubt is recovered by a proven start, which the clear waits out.
-  return runAfterProviderStart(context, params.envelope.sessionId, () =>
-    clearUnderSerialize(context, caller, params)
-  )
+  const { sessionId } = params.envelope
+  const rewind = context.deps.store.getRecord(sessionId)?.rewind
+  if (rewind?.phase === 'prepared' || rewind?.phase === 'provider-succeeded') {
+    const prepared = await prepareReadyStructuredAgentSessionOperation(
+      context,
+      caller.callerKey,
+      params.envelope,
+      'agentSession.conversationCommand',
+      { command: params.command }
+    )
+    if (prepared.ok && prepared.child) {
+      await context.recoverRewind(sessionId, prepared.child)
+    }
+  }
+  return clearUnderSerialize(context, caller, params)
 }
 
 function clearUnderSerialize(
@@ -78,8 +89,7 @@ function clearUnderSerialize(
       logger: context.deps.logger,
       callerKey: caller.callerKey,
       envelope,
-      // Starts the agent only to settle a rewind in doubt, as a send does; a /clear itself starts nothing.
-      prepareSession: sendPreparation(context, envelope, { refusesInRun: true }),
+      prepareSession: sendPreparation(context, envelope),
       journal: () => context.sessions.get(sessionId)?.journal,
       publish: (journal) => context.publish(sessionId, journal),
       now: context.now,

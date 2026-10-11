@@ -43,6 +43,7 @@ const rewind = vi.fn<NonNullable<StructuredAgentSessionAdapter['rewind']>>()
 const recoverRewind = vi.fn<NonNullable<StructuredAgentSessionAdapter['recoverRewind']>>()
 const rewindSupport = vi.fn<NonNullable<StructuredAgentSessionAdapter['rewindSupport']>>()
 const dispatch = vi.fn<StructuredAgentSessionAdapter['dispatch']>()
+const setOption = vi.fn<StructuredAgentSessionAdapter['setOption']>()
 
 function adapter(): StructuredAgentSessionAdapter {
   return startsWhenPublished(
@@ -72,7 +73,7 @@ function adapter(): StructuredAgentSessionAdapter {
       dispatch,
       cancelTurn: async () => ({ cancelled: false }),
       answerPrompt: async () => {},
-      setOption: async () => {},
+      setOption,
       rewindSupport,
       rewind,
       recoverRewind,
@@ -115,6 +116,7 @@ beforeEach(async () => {
       ordinal: 1
     }
   }))
+  setOption.mockReset().mockResolvedValue(undefined)
   directory = await mkdtemp(join(tmpdir(), 'orca-rewind-rest-'))
   store = await openTestAgentSessionRecordStore(directory)
   host = openHost()
@@ -186,6 +188,39 @@ async function interruptedRewindAtRest(): Promise<void> {
 }
 
 describe('an interrupted Codex rewind on a chat at rest (R16)', () => {
+  it('applies a pick made during recovery before handing over the accepted message', async () => {
+    await interruptedRewindAtRest()
+    const recovering = Promise.withResolvers<void>()
+    recoverRewind.mockImplementationOnce(async () => {
+      await recovering.promise
+      return { ok: true, items: [{ identity: KEPT, body: hostTestMessage('verified history') }] }
+    })
+    expect(await host.send(caller, sendParams('after the rewind'))).toMatchObject({ ok: true })
+    await vi.waitFor(() => expect(recoverRewind).toHaveBeenCalledOnce())
+    const fields = { key: 'model', value: 'new-model' }
+    expect(
+      await host.setOption(caller, {
+        ...fields,
+        envelope: {
+          sessionId: SESSION,
+          clientOperationId: hostTestOperationId(),
+          expectedRuntimeFence: fence(),
+          payloadFingerprint: computeAgentSessionPayloadFingerprint({
+            method: 'agentSession.setOption',
+            sessionId: SESSION,
+            fields
+          })
+        }
+      })
+    ).toMatchObject({ ok: true })
+    recovering.resolve()
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
+    expect(setOption).toHaveBeenCalledWith(expect.objectContaining(fields))
+    expect(setOption.mock.invocationCallOrder[0]).toBeLessThan(
+      dispatch.mock.invocationCallOrder[0]!
+    )
+  })
+
   it('is settled by the start a send makes, and the message is delivered after it', async () => {
     await interruptedRewindAtRest()
     expect(host.hasSession(SESSION)).toBe(false)
@@ -193,10 +228,10 @@ describe('an interrupted Codex rewind on a chat at rest (R16)', () => {
 
     const sent = await host.send(caller, sendParams('after the rewind'))
     expect(sent).toMatchObject({ ok: true })
+    await vi.waitFor(() => expect(recoverRewind).toHaveBeenCalledOnce())
     expect(acquires - before).toBe(1)
-    expect(recoverRewind).toHaveBeenCalledOnce()
-    expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed')
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
+    expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed')
     const snapshot = await host.journalSnapshot(SESSION)
     const texts = snapshot.items.flatMap((item) =>
       item.body.kind === 'message'

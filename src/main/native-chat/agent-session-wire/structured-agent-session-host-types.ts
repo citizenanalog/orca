@@ -67,6 +67,10 @@ export type StructuredAgentSessionChildClose = {
 /** The provider process behind a conversation. Written only in
  *  `structured-agent-session-provider-child`. */
 export type StructuredAgentSessionProviderChild = StructuredAgentSessionProviderChildIdentity & {
+  /** The host start this child belongs to; preserved when a reattach rebuilds its record. */
+  readonly startAttemptId?: string
+  settlingStart?: true
+  signedOutAt?: AgentJournalCursor
   /** Every acquired child is `starting` until the host settles its `started` event; only then is
    *  it handed input and are its reported options fact. */
   phase: StructuredAgentSessionProviderChildPhase
@@ -89,6 +93,7 @@ export type { StructuredAgentSessionChildEndCause }
  *  Stop from a failure. */
 export type StructuredAgentSessionEndedChild = StructuredAgentSessionProviderChildIdentity &
   StructuredAgentSessionStopVerdict & {
+    readonly startAttemptId?: string
     /** `user-stop` is a Stop the user asked for; `host-stop` is the host stopping the child for a
      *  cause of its own, which fails the start the delivery loop was waiting on. */
     cause: StructuredAgentSessionChildEndCause
@@ -97,6 +102,7 @@ export type StructuredAgentSessionEndedChild = StructuredAgentSessionProviderChi
     /** What the chat records about this end; absent reads as a provider exit with no detail. */
     failure?: SubmissionRejectionFact
     duringStartup: boolean
+    providerStartedBeforePublication?: true
     startedFor?: string
     /** Where the conversation's journal stood when the child ended, to order the end against a
      *  message's acceptance. A close's end stands where its stop was asked for. */

@@ -1,5 +1,8 @@
 import type { AgentJournalDispatchRejection } from '../../../shared/agent-session-failure-words'
-import type { AgentJournalSubmission } from '../../../shared/agent-session-journal-types'
+import type {
+  AgentJournalCursor,
+  AgentJournalSubmission
+} from '../../../shared/agent-session-journal-types'
 import { isQueuedAgentJournalSubmission } from '../../../shared/agent-session-queued-submission'
 import { DISPATCH_DOUBT_HOST_RESTARTED } from './journal-dispatch-doubt-reasons'
 import type { JournalReducerState } from './journal-reducer'
@@ -109,15 +112,25 @@ export async function rejectJournalQueuedSubmissions(
 export function journalQueuedRejectionRowBuilders(
   state: () => JournalReducerState,
   fence: number,
-  rejection: AgentJournalDispatchRejection
+  rejection: AgentJournalDispatchRejection & { through?: AgentJournalCursor }
 ): ((seq: number, ts: number) => JournalRow)[] {
-  return [...state().submissions.values()].filter(isQueuedAgentJournalSubmission).map((entry) =>
-    journalDispatchRowBuilder(state, {
-      clientMessageId: entry.clientMessageId,
-      state: 'rejected',
-      ...rejection,
-      fence,
-      recovered: true
-    })
-  )
+  const { through, ...words } = rejection
+  return [...state().submissions.values()]
+    .filter(
+      (entry) =>
+        isQueuedAgentJournalSubmission(entry) &&
+        (through === undefined ||
+          (state().epoch === through.epoch &&
+            entry.acceptedSequence !== undefined &&
+            entry.acceptedSequence <= through.sequence))
+    )
+    .map((entry) =>
+      journalDispatchRowBuilder(state, {
+        clientMessageId: entry.clientMessageId,
+        state: 'rejected',
+        ...words,
+        fence,
+        recovered: true
+      })
+    )
 }

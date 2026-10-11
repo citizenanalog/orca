@@ -19,6 +19,7 @@ import {
 } from './structured-agent-session-mutation-context'
 import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
 import type { MutationPlan } from './structured-agent-session-mutation-plans'
+import { agentSessionMutationAdmitsNow } from './structured-agent-session-mutation-admits-now'
 import {
   runRecordedStop,
   stopReachesUnrecordedWork,
@@ -36,6 +37,26 @@ import { isMainAgentWorking, performCancel } from './structured-agent-session-tu
 import type { AgentSessionTurnContext, TurnOutcome } from './structured-agent-session-turns'
 
 type ChatStopOutcome = TurnOutcome<AgentSessionCancelResult>
+
+/** Stop aborts an in-flight acquire only when this call can take effect now. */
+export function abortAcquireForStop(
+  context: StructuredAgentSessionMutationContext,
+  caller: StructuredAgentSessionCaller,
+  envelope: AgentSessionMutationEnvelope,
+  plan: MutationPlan<AgentSessionCancelResult>
+): void {
+  if (
+    agentSessionMutationAdmitsNow({
+      store: context.deps.store,
+      callerKey: caller.callerKey,
+      envelope,
+      plan,
+      now: context.now
+    })
+  ) {
+    context.acquireAborts.abort(envelope.sessionId, 'stopped while starting')
+  }
+}
 
 /** What the chat's Stop did, and whether its next step ends the provider's session. */
 export type StructuredAgentSessionChatStopRun = { outcome: ChatStopOutcome; endsSession: boolean }

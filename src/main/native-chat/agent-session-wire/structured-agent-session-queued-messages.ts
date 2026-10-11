@@ -16,7 +16,6 @@ import {
 import { createStructuredAgentSessionOperationId } from '../../../shared/structured-agent-session-mutation'
 import { agentSessionSendBodyFingerprint } from '../../../shared/structured-agent-session-send-mutation'
 import { queuedSendAnswer } from './structured-agent-session-queued-send-answer'
-import { structuredAgentSessionSendBlock } from './structured-agent-session-send-preparation'
 import { queuedMessagesPublishedBytesRefusal } from './structured-agent-session-queued-published-bytes'
 import type { AgentSessionRecord } from '../../../shared/agent-session-record'
 import { isStructuredAgentSessionMainAgentWorking } from '../../../shared/structured-agent-session-main-agent-working'
@@ -90,7 +89,7 @@ function oldestActionableQueuedMessage(
  * to a child this host no longer runs and holds nothing. Host-local vocabulary —
  * never on the wire.
  */
-export type StructuredQueueHold = 'blocked' | 'working' | 'prompt'
+export type StructuredQueueHold = 'working' | 'prompt'
 
 export function structuredQueueHold(input: {
   journal: AgentSessionJournal
@@ -99,9 +98,6 @@ export function structuredQueueHold(input: {
 }): StructuredQueueHold | null {
   // Whatever refuses any send refuses the queue too: an uncertain rewind or a source a
   // clear superseded. One rule, the immediate path's own.
-  if (structuredAgentSessionSendBlock(input.record)) {
-    return 'blocked'
-  }
   const { journal } = input
   // `prompt` outranks `working`: it is the one wait Send-now may not override,
   // so a prompt raised mid-turn must not read as merely `working`.
@@ -155,11 +151,6 @@ export function shouldQueueStructuredAgentSessionSend(input: {
   fence: number
 }): boolean {
   const hold = structuredQueueHold(input)
-  if (hold === 'blocked') {
-    // The immediate path's own refusal (`structuredAgentSessionSendBlock`)
-    // answers; queueing behind a fence would strand the draft.
-    return false
-  }
   if (hold !== null) {
     return true
   }

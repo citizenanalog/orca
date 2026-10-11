@@ -18,9 +18,24 @@ import type { StructuredAgentSessionLogger } from './structured-agent-session-lo
 type SignedOutReading = Pick<StructuredAgentSessionHostSession, 'child'> & {
   journal: Pick<
     AgentSessionJournal,
-    'visitItems' | 'visitItemsWithLinkage' | 'itemFence' | 'activeTurnId' | 'newestTurn'
+    'visitItems' | 'visitItemsWithLinkage' | 'itemFence' | 'activeTurnId' | 'newestTurn' | 'cursor'
   > & {
-    submissions(): readonly Pick<AgentJournalSubmission, 'dispatchState' | 'fence' | 'rejection'>[]
+    submissions(): readonly (Pick<AgentJournalSubmission, 'dispatchState' | 'fence' | 'rejection'> &
+      Partial<Pick<AgentJournalSubmission, 'clientMessageId' | 'acceptedSequence'>>)[]
+  }
+}
+
+/** The first committed signed-out observation orders this child against later accepted sends. */
+export function noteSignedOutStructuredAgentSessionChild(
+  session: SignedOutReading | undefined,
+  startUnavailable?: AgentSessionUnavailable
+): void {
+  if (
+    session?.child &&
+    !session.child.signedOutAt &&
+    structuredAgentSessionChildReportedSignedOut(session, startUnavailable)
+  ) {
+    session.child.signedOutAt = session.journal.cursor()
   }
 }
 
@@ -79,8 +94,8 @@ function owesWakeUp(
 }
 
 /** For a caller inside the session's serialize, before it hands the next send (`startedFor`) to
- *  the child. A child started for that same send keeps it: the send has not reached any child yet,
- *  and the agent's own refusal settles it once, where a new child would refuse it again forever.
+ *  the child. A send accepted before its first signed-out observation belongs to this child;
+ *  its own refusal settles that send once.
  *  Work the child still owes keeps it, as it keeps an idle one from the sweep. A stop that fails
  *  leaves the close begun, which the start joins. */
 export async function retireSignedOutStructuredAgentSessionChild(
@@ -94,10 +109,17 @@ export async function retireSignedOutStructuredAgentSessionChild(
     logger: StructuredAgentSessionLogger
   }
 ): Promise<void> {
+  noteSignedOutStructuredAgentSessionChild(session, deps.startUnavailable?.())
+  const accepted = session?.journal
+    .submissions()
+    .find((entry) => entry.clientMessageId === startedFor)
+  const observed = session?.child?.signedOutAt
   if (
     !session ||
-    session.child?.startedFor === startedFor ||
-    !structuredAgentSessionChildReportedSignedOut(session, deps.startUnavailable?.()) ||
+    !observed ||
+    (accepted?.acceptedSequence !== undefined &&
+      observed.epoch === session.journal.cursor().epoch &&
+      accepted.acceptedSequence <= observed.sequence) ||
     structuredAgentSessionChildHasOpenWork(session.journal, deps.work) ||
     owesWakeUp(session.journal, deps.work.childWork())
   ) {

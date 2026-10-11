@@ -174,11 +174,11 @@ it('recovers a Codex rewind left in doubt once the restarted thread is open, the
 
   const sent = send(host, 'after the rewind')
   await eventually(() => expect(child.spawns()).toBe(2))
-  expect(await settlesSoon(sent)).toBe(false)
+  expect(await settlesSoon(sent)).toBe(true)
   child.releaseHandshake()
 
   expect(await sent).toMatchObject({ ok: true })
-  expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed')
+  await eventually(() => expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed'))
   await eventually(() => expect(child.prompts()).toEqual(['first turn', 'after the rewind']))
 })
 
@@ -218,13 +218,13 @@ it('settles a rewind that goes in doubt while a send waits in the queue, by wait
   }))
   queueHeld.resolve()
 
-  // The send starts the agent to settle the rewind, and waits that start out.
+  // Admission returns while the delivery loop waits for the start and rewind recovery.
   await eventually(() => expect(child.spawns()).toBe(2))
-  expect(await settlesSoon(sent)).toBe(false)
+  expect(await settlesSoon(sent)).toBe(true)
   child.releaseHandshake()
 
   expect(await sent).toMatchObject({ ok: true })
-  expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed')
+  await eventually(() => expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed'))
   await eventually(() => expect(child.prompts()).toEqual(['first turn', 'after the rewind']))
 })
 

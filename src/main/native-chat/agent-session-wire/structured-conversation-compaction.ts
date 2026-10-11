@@ -23,10 +23,8 @@ import {
 } from './structured-agent-session-mutation-plans'
 import {
   sendPreparation,
-  structuredAgentSessionFailureWordsContext,
-  structuredAgentSessionSendBlock
+  structuredAgentSessionFailureWordsContext
 } from './structured-agent-session-send-preparation'
-import { runAfterProviderStart } from './structured-agent-session-provider-start-hold'
 import { STRUCTURED_AGENT_SESSION_START_WAIT_MS } from './structured-agent-session-send-settlement'
 import {
   conversationCommandFailure,
@@ -147,9 +145,7 @@ function acceptStructuredConversationCommand(
     ...(params.delivery ? { delivery: params.delivery } : {}),
     priorRecord
   })
-  return runAfterProviderStart(context, params.envelope.sessionId, () =>
-    acceptUnderSerialize(context, caller, params, plan, arrival)
-  )
+  return acceptUnderSerialize(context, caller, params, plan, arrival)
 }
 
 function acceptUnderSerialize(
@@ -197,9 +193,7 @@ function acceptUnderSerialize(
             context.readChildWork(ctx.sessionId),
             context.sessions.get(ctx.sessionId)?.child ? undefined : 'at-rest'
           )
-        const blocked =
-          structuredAgentSessionSendBlock(record) ??
-          (refusal ? { ok: false as const, refusal } : null)
+        const blocked = refusal ? { ok: false as const, refusal } : null
         if (blocked) {
           return blocked
         }

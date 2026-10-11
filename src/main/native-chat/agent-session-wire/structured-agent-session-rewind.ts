@@ -1,9 +1,7 @@
 import { agentSessionProviderHandleChainHead } from '../../../shared/agent-session-provider-handle'
-import { readAgentJournalTurn } from '../../../shared/agent-session-turn-record'
 import { agentJournalLinkageFields } from '../../../shared/agent-session-journal-producer'
 import {
   agentJournalItemKey,
-  agentJournalSubmissionKey,
   parseAgentJournalItemKey
 } from '../../../shared/agent-session-journal-item-key'
 import type { JournalOperationReceipt } from '../agent-session-journal/journal-row-writer'
@@ -15,7 +13,6 @@ import type {
 import type { AgentSessionMutationResult } from '../../../shared/agent-session-wire'
 import { AGENT_SESSION_HISTORY_MAX_PAGE_BYTES } from './agent-session-history-page-bounds'
 import type { StructuredAgentSessionMutationContext } from './structured-agent-session-host-mutations'
-import { openWithAgent } from './structured-agent-session-send-preparation'
 import type { StructuredAgentSessionAttachContext } from './structured-agent-session-attach-context'
 import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
 import { admitAndRunAgentSessionMutation } from './structured-agent-session-mutation-admission'
@@ -24,25 +21,37 @@ import { rewindRefusal, rewindRefusalBehindClear } from './structured-rewind-ref
 import { renameRewindTurnOpener } from './structured-rewind-journal-body'
 import { persistRewindRecord, recoverStructuredRewind } from './structured-rewind-recovery'
 import { mergeRetainedHostLifecycleRows } from './structured-rewind-retained-host-rows'
-import { runAfterProviderStart } from './structured-agent-session-provider-start-hold'
+import { codexRewindTurnBoundary, rewindProviderItemKey } from './structured-rewind-target'
+import {
+  openWithReadyStructuredAgentSessionChild,
+  prepareReadyStructuredAgentSessionOperation,
+  type ReadyOperationChild
+} from './structured-agent-session-ready-operation'
 
-export function rewindStructuredAgentSession(
+export async function rewindStructuredAgentSession(
   context: StructuredAgentSessionMutationContext,
   attachContext: StructuredAgentSessionAttachContext,
   caller: StructuredAgentSessionCaller,
   params: AgentSessionRewindParams
 ): Promise<AgentSessionMutationResult<AgentSessionRewindResult>> {
-  // Only a proven child has the protocol session a rewind reads and changes.
-  return runAfterProviderStart(context, params.envelope.sessionId, () =>
-    rewindUnderSerialize(context, attachContext, caller, params)
+  const ready = await prepareReadyStructuredAgentSessionOperation(
+    context,
+    caller.callerKey,
+    params.envelope,
+    'agentSession.rewind',
+    { itemId: params.itemId, expectedEpoch: params.expectedEpoch }
   )
+  return ready.ok
+    ? rewindUnderSerialize(context, attachContext, caller, params, ready.child)
+    : ready
 }
 
 function rewindUnderSerialize(
   context: StructuredAgentSessionMutationContext,
   attachContext: StructuredAgentSessionAttachContext,
   caller: StructuredAgentSessionCaller,
-  params: AgentSessionRewindParams
+  params: AgentSessionRewindParams,
+  selected: ReadyOperationChild
 ): Promise<AgentSessionMutationResult<AgentSessionRewindResult>> {
   const { sessionId, clientOperationId } = params.envelope
   const store = context.deps.store
@@ -56,9 +65,16 @@ function rewindUnderSerialize(
       callerKey: caller.callerKey,
       envelope: params.envelope,
       // Only the provider can do this, so an agent at rest is started first.
-      prepareSession: openWithAgent(context, params.envelope, () =>
-        rewindRefusalBehindClear(context.sessions.get(sessionId)?.journal, params)
-      ),
+      prepareSession: async (ledger) => {
+        const blocked =
+          ledger === 'admit'
+            ? rewindRefusalBehindClear(context.sessions.get(sessionId)?.journal, params)
+            : null
+        return (
+          blocked ??
+          openWithReadyStructuredAgentSessionChild(context, params.envelope, selected)(ledger)
+        )
+      },
       journal: () => context.sessions.get(sessionId)?.journal,
       publish: (journal) => context.publish(sessionId, journal),
       now: context.now,
@@ -113,19 +129,7 @@ function rewindUnderSerialize(
           const contextStart = contextFloor
             ? snapshot.items.findIndex((item) => item.sequence > contextFloor.sequence)
             : 0
-          const providerKeys = new Map(
-            snapshot.submissions.flatMap((submission) =>
-              submission.dispatchState === 'accepted' && submission.providerItemId
-                ? [
-                    [
-                      agentJournalSubmissionKey(submission.clientMessageId),
-                      submission.providerItemId
-                    ] as const
-                  ]
-                : []
-            )
-          )
-          const providerKey = (itemId: string) => providerKeys.get(itemId) ?? itemId
+          const providerKey = rewindProviderItemKey(snapshot)
           if (ctx.journal.cursor().epoch !== params.expectedEpoch) {
             return rewindRefusal('stale-epoch')
           }
@@ -145,17 +149,12 @@ function rewindUnderSerialize(
             if (key.threadId !== head.nativeId) {
               return rewindRefusal('invalid-target')
             }
-            boundary = snapshot.items.findIndex((item) => {
-              if (contextFloor && item.sequence <= contextFloor.sequence) {
-                return false
-              }
-              const identity = parseAgentJournalItemKey(providerKey(item.itemId))
-              return (
-                (identity?.provider === 'codex' &&
-                  identity.threadId === key.threadId &&
-                  identity.turnId === key.turnId) ||
-                readAgentJournalTurn(item.body)?.turnId === key.turnId
-              )
+            boundary = codexRewindTurnBoundary({
+              items: snapshot.items,
+              contextFloor,
+              threadId: key.threadId,
+              turnId: key.turnId,
+              providerKey
             })
           } else {
             return rewindRefusal('invalid-target')

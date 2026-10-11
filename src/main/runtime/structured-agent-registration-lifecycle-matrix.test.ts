@@ -73,6 +73,7 @@ type Chat = {
   child: ScriptedAgentChild
   fence: () => number
   send: (text: string) => Promise<string>
+  pick: (key: string, value: string) => Promise<void>
   stop: () => Promise<void>
   submission: (clientMessageId: string) => Promise<AgentJournalSubmission | undefined>
   phase: () => 'starting' | 'ready' | undefined
@@ -149,6 +150,14 @@ async function openChat(
       const stopped = await host.cancel(CALLER, { envelope: envelope('agentSession.cancel', {}) })
       expect(stopped, JSON.stringify(stopped)).toMatchObject({ ok: true })
     },
+    pick: async (key, value) => {
+      const picked = await host.setOption(CALLER, {
+        envelope: envelope('agentSession.setOption', { key, value }),
+        key,
+        value
+      })
+      expect(picked, JSON.stringify(picked)).toMatchObject({ ok: true })
+    },
     submission: async (clientMessageId) => {
       await host.flushStreamedEvents(SESSION)
       return (await host.journalSnapshot(SESSION)).submissions.find(
@@ -183,6 +192,21 @@ describe.each(
     const chat = await openChat(definition)
     chat.child.releaseHandshake()
     await eventually(() => expect(chat.phase()).toBe('ready'))
+    expect(chat.child.prompts()).toEqual([])
+  })
+
+  it('answers reads and publishes accepted picks without waiting for the held handshake', async () => {
+    const chat = await openChat(definition)
+    await chat.pick('model', 'selected-before-ready')
+    expect(chat.phase()).toBe('starting')
+    expect(chat.host.deps.store.getRecord(SESSION)?.options?.model).toBe('selected-before-ready')
+    await expect(chat.host.readOptions(SESSION)).resolves.toMatchObject({
+      current: { model: 'selected-before-ready' }
+    })
+    expect(chat.child.prompts()).toEqual([])
+    expect(chat.child.spawns()).toBe(1)
+    await chat.stop()
+    await eventually(() => expect(chat.child.closes()).toBe(1))
     expect(chat.child.prompts()).toEqual([])
   })
 

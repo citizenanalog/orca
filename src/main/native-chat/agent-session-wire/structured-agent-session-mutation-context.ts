@@ -15,10 +15,13 @@ import type { MutationPlan } from './structured-agent-session-mutation-plans'
 import type { StructuredAgentSessionStopEnding } from './structured-agent-session-host-lifetime'
 import type { StructuredAgentSessionAcquireAborts } from './structured-agent-session-acquire-aborts'
 import type { StructuredAgentSessionOptionRevisions } from './structured-agent-session-option-revisions'
+import type { StructuredAgentSessionStartupAttempts } from './structured-agent-session-startup-attempt'
+import type { StructuredAgentSessionAttachContext } from './structured-agent-session-attach-context'
 import type {
   StructuredAgentSessionCaller,
   StructuredAgentSessionHostDeps,
-  StructuredAgentSessionHostSession
+  StructuredAgentSessionHostSession,
+  StructuredAgentSessionProviderChildIdentity
 } from './structured-agent-session-host-types'
 
 export type StructuredAgentSessionMutationContext = {
@@ -49,20 +52,55 @@ export type StructuredAgentSessionMutationContext = {
   /** The provider wait each session's serialize is on (a start, an option write), which a caller
    *  outside that serialize aborts. */
   acquireAborts: Pick<StructuredAgentSessionAcquireAborts, 'abort' | 'begin'>
+  startupAttempts: Pick<StructuredAgentSessionStartupAttempts, 'wait'>
+  recoverRewind: (
+    sessionId: string,
+    child: StructuredAgentSessionProviderChildIdentity
+  ) => Promise<boolean>
   /** Moved by every pick a running child takes, so a report it read before is never persisted. */
   optionRevisions: Pick<StructuredAgentSessionOptionRevisions, 'advance'>
   now: () => number
 }
 
-/** Admits the envelope and runs the plan inside the session's serialize. */
+/** The mutation surface adds actions to the attach's existing host ownership context. */
+export function mutationContextFromAttach(
+  attach: StructuredAgentSessionAttachContext,
+  actions: Pick<
+    StructuredAgentSessionMutationContext,
+    | 'publish'
+    | 'conversation'
+    | 'readChildWork'
+    | 'ensureAgent'
+    | 'joinChildClose'
+    | 'wakeDelivery'
+    | 'stopAgent'
+    | 'wakeQueuedDrain'
+    | 'recoverRewind'
+  >
+): StructuredAgentSessionMutationContext {
+  return {
+    deps: attach.deps,
+    sessions: attach.sessions,
+    serialize: attach.serialize,
+    openConversation: attach.openConversation,
+    acquireAborts: attach.runtimeState.acquireAborts,
+    startupAttempts: attach.runtimeState.startupAttempts,
+    optionRevisions: attach.runtimeState.optionRevisions,
+    now: attach.now,
+    ...actions
+  }
+}
+
+/** Admits the envelope and runs the plan in the session's mutation lane by default. */
 export function mutateStructuredAgentSession<TValue>(
   context: StructuredAgentSessionMutationContext,
   caller: StructuredAgentSessionCaller,
   envelope: AgentSessionMutationEnvelope,
   plan: MutationPlan<TValue>,
-  prepareSession?: AgentSessionMutationRequest<TValue>['prepareSession']
+  prepareSession?: AgentSessionMutationRequest<TValue>['prepareSession'],
+  execution: 'session-lane' | 'store-transactions' = 'session-lane'
 ): Promise<AgentSessionMutationResult<TValue>> {
-  return context.serialize(envelope.sessionId, () =>
+  const run = () =>
     admitAndRunAgentSessionMutation({
       store: context.deps.store,
       adapter: context.deps.adapter,
@@ -77,5 +115,5 @@ export function mutateStructuredAgentSession<TValue>(
       wakeDelivery: (sessionId) => context.wakeDelivery(sessionId),
       now: () => context.now()
     })
-  )
+  return execution === 'store-transactions' ? run() : context.serialize(envelope.sessionId, run)
 }

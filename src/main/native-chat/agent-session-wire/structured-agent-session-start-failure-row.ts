@@ -1,5 +1,8 @@
 import { agentJournalItemKey } from '../../../shared/agent-session-journal-item-key'
-import { AGENT_JOURNAL_THREAD_SCOPE } from '../../../shared/agent-session-journal-types'
+import {
+  AGENT_JOURNAL_THREAD_SCOPE,
+  type AgentJournalCursor
+} from '../../../shared/agent-session-journal-types'
 import { isQueuedAgentJournalSubmission } from '../../../shared/agent-session-queued-submission'
 import { structuredAgentSessionStartFailureRowIdentity } from '../../../shared/structured-agent-session-start-failure-row-key'
 import type { JournalLifecycleMutationInput } from '../agent-session-journal/journal-row-builders'
@@ -48,10 +51,16 @@ export function hasStructuredAgentSessionStartFailureRow(
  */
 export async function recordStructuredAgentSessionStartFailure(
   session: Pick<StructuredAgentSessionHostSession, 'journal'> & { fence: number },
-  failure: StructuredAgentSessionStartFailure
+  failure: StructuredAgentSessionStartFailure,
+  through: AgentJournalCursor = session.journal.cursor()
 ): Promise<void> {
   const oldest = oldestQueuedSubmission(session)
-  if (!oldest) {
+  if (
+    !oldest ||
+    oldest.acceptedSequence === undefined ||
+    through.epoch !== session.journal.cursor().epoch ||
+    oldest.acceptedSequence > through.sequence
+  ) {
     return
   }
   const startKey = failure.startKey ?? oldest.clientMessageId
@@ -60,7 +69,7 @@ export async function recordStructuredAgentSessionStartFailure(
     fence: session.fence,
     recovered: true,
     mutations: [structuredAgentSessionStartFailureRow(startKey, failure)],
-    rejectsQueued: { reason: failure.reason, rejection: failure.rejection }
+    rejectsQueued: { reason: failure.reason, rejection: failure.rejection, through }
   })
 }
 

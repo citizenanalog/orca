@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { agentSessionFailureFact } from '../../../shared/agent-session-failure'
 import { agentSessionFailureWords } from '../../../shared/agent-session-failure-words'
+import { hostTestAttachParams } from './structured-agent-session-host-test-data'
 import {
   acceptedDispatch,
   createRestTestRig,
@@ -66,11 +67,14 @@ describe('a send after the agent said it is not signed in', () => {
 
   // A Pi that started with no model keeps a placeholder: a sign-in made since reaches a new Pi only.
   it('goes to a new agent when the running one started signed out', async () => {
-    await foundRestTestChat(rig)
     rig.adapter.startUnavailable.mockReturnValueOnce({ reason: 'notSignedIn' })
+    expect(await rig.host.attach(CALLER, hostTestAttachParams(null))).toMatchObject({ ok: true })
+    await vi.waitFor(() =>
+      expect(rig.host.collaboratorsForTests().sessions.get(SESSION)?.child?.phase).toBe('ready')
+    )
     rig.adapter.closeSession.mockClear()
     expect((await rig.host.send(CALLER, restTestSend('signed in since', fence()))).ok).toBe(true)
-    await vi.waitFor(() => expect(rig.adapter.dispatch).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rig.adapter.dispatch).toHaveBeenCalledOnce())
     expect(rig.adapter.closeSession).toHaveBeenCalledWith(SESSION)
     expect(rig.adapter.acquire).toHaveBeenCalledTimes(2)
   })
@@ -108,8 +112,10 @@ const statusRow = (
     ...agentSessionFailureWords(agentSessionFailureFact(kind), { surface: 'row' })
   }
 })
-const rejected = (fence: number) => ({
+const rejected = (fence: number, clientMessageId = 'earlier-send', acceptedSequence = 1) => ({
   fence,
+  clientMessageId,
+  acceptedSequence,
   dispatchState: 'rejected' as const,
   rejection: agentSessionFailureFact('notSignedIn')
 })
@@ -134,6 +140,7 @@ const conversation = (
   return {
     child: input.child === undefined ? childAt() : input.child,
     journal: {
+      cursor: () => ({ epoch: 'test-epoch', sequence: 5 }),
       submissions: () => input.submissions ?? [],
       visitItems: (visit: (itemId: string, sequence: number, body: AgentJournalItemBody) => void) =>
         items.forEach((item, index) => visit(item.itemId, index, item.body)),
@@ -221,20 +228,15 @@ describe('retireSignedOutStructuredAgentSessionChild', () => {
     expect((await retire(signedOut)).stopAgent).toHaveBeenCalledWith('session')
   })
 
-  it('keeps a child started for the send it is about to take', async () => {
+  it('keeps sends accepted before the signed-out observation on their original child', async () => {
     const own = await retire(
-      { ...signedOut, child: childAt({ startedFor: 'next-send' }) },
+      { submissions: [rejected(2, 'next-send', 4)] },
       {},
       undefined,
       'next-send'
     )
     expect(own.stopAgent).not.toHaveBeenCalled()
-    const earlier = await retire(
-      { ...signedOut, child: childAt({ startedFor: 'earlier-send' }) },
-      {},
-      undefined,
-      'next-send'
-    )
+    const earlier = await retire(signedOut, {}, undefined, 'next-send')
     expect(earlier.stopAgent).toHaveBeenCalledWith('session')
   })
 

@@ -14,11 +14,8 @@ import type {
   AgentSessionTurnActivity
 } from '../../../shared/agent-session-wire'
 import type { AgentSessionAttachParams } from './structured-agent-session-attach'
-import {
-  performAttach,
-  type AttachedOwner,
-  type AttachFlowInput
-} from './structured-agent-session-attach-flow'
+import { performAttach, type AttachFlowInput } from './structured-agent-session-attach-flow'
+import { buildAttachedProviderChild } from './structured-agent-session-attached-child'
 import { endStructuredAgentSessionReleasedChild } from './structured-agent-session-attach-failure'
 import { stampFailedCreateOwnerVerdict } from './structured-agent-session-failed-create-refusal'
 import {
@@ -58,12 +55,8 @@ export type StructuredAgentSessionAttachOptions = {
 }
 
 /**
- * The attach itself, for a caller already inside the session's serialize.
- *
- * That is every caller that has to know what the session looks like RIGHT NOW: the delivery loop,
- * and an operation that needs the provider. They run their check and this attach in one serialized
- * step, so "the session has no child" is still true when
- * the attach starts. `attachStructuredAgentSession` is this under `serialize`, for a client.
+ * The attach itself. The host coalesces child starts before calling this from delivery or an
+ * operation, allowing the provider wait to run outside admission's serialized step.
  */
 export function attachStructuredAgentSessionUnderSerialize(
   context: StructuredAgentSessionAttachContext,
@@ -114,10 +107,21 @@ async function runAttach(
 ): Promise<AgentSessionMutationResult<AgentSessionAttachResult>> {
   // Begun first, so a close or Stop during any phase below still stops the start.
   const acquire = context.runtimeState.acquireAborts.begin(params.envelope.sessionId)
+  let heldForStart = false
   try {
-    return await runAttachUnderAbort(context, callerKey, params, options, acquire.signal)
+    const result = await runAttachUnderAbort(context, callerKey, params, options, acquire.signal)
+    const child = context.sessions.get(params.envelope.sessionId)?.child
+    if (result.ok && child?.phase === 'starting' && child.startAttemptId) {
+      heldForStart = true
+      void context.runtimeState.startupAttempts
+        .wait(params.envelope.sessionId, child.startAttemptId, child)
+        .then(acquire.end, acquire.end)
+    }
+    return result
   } finally {
-    acquire.end()
+    if (!heldForStart) {
+      acquire.end()
+    }
     if (isStructuredAgentSessionStartupExpired(acquire.signal.reason)) {
       options.onStartupExpired?.()
     } else if (acquire.signal.aborted) {
@@ -245,14 +249,14 @@ async function runAttachUnderAbort(
         if (owner !== 'none') {
           attempt.candidate = {
             sink: eventSink,
-            child: {
-              generation: acquisitionGeneration ?? current?.generation ?? null,
+            child: buildAttachedProviderChild({
+              owner,
+              current,
+              startup: attempt.startup,
+              acquisitionGeneration,
               fence,
-              // Every acquired child starts unproven; a re-attach keeps what its child already proved.
-              phase: owner === 'acquired' ? 'starting' : (current?.phase ?? 'ready'),
-              ...(startedFor === undefined ? {} : { startedFor }),
-              ...launchedOptionsOf(owner, attempt.startup, current)
-            }
+              ...(startedFor === undefined ? {} : { startedFor })
+            })
           }
         }
         // Only a proven child has the protocol session recovery asks; a starting one recovers in
@@ -283,26 +287,19 @@ async function runAttachUnderAbort(
       if (attempt.startup) {
         startupAttempts.published(sessionId, attempt.startup.attemptId, candidate.child)
       }
+      context.onChildPublished?.(sessionId)
       context.publishStatus?.(sessionId)
     }
     return stampFailedCreateOwnerVerdict(context.deps.store, callerKey, params.envelope, attached)
   } finally {
     if (!attempt.committed) {
+      context.onChildAbandoned?.(sessionId)
       attemptSink.close()
       if (attempt.startup) {
         startupAttempts.abandon(sessionId, attempt.startup.attemptId)
       }
     }
   }
-}
-
-function launchedOptionsOf(
-  owner: AttachedOwner,
-  startup: StructuredAgentSessionStartupAttempt | null,
-  current: StructuredAgentSessionProviderChild | null
-): Pick<StructuredAgentSessionProviderChild, 'launchedOptions'> {
-  const launchedOptions = owner === 'acquired' ? (startup?.options ?? {}) : current?.launchedOptions
-  return launchedOptions ? { launchedOptions } : {}
 }
 
 type AttachCandidate = {

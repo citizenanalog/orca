@@ -3,7 +3,7 @@ import {
   type AgentJournalRenderItem
 } from '../../../shared/agent-session-journal-types'
 // A Codex rewind left in doubt while its agent keeps running: no attach comes to settle it, so the
-// next send asks the provider as an attach would, and a send refused meanwhile never poisons its id.
+// accepted send asks the provider before handover; an uncertain answer rejects that accepted row.
 
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -199,9 +199,9 @@ describe('a rewind in doubt while its agent keeps running', () => {
 
     expect(await host.send(caller, sendParams('after the rewind'))).toMatchObject({ ok: true })
     expect(acquires).toBe(before)
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
     expect(recoverRewind).toHaveBeenCalledOnce()
     expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed')
-    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
     expect(sentTexts((await host.journalSnapshot(SESSION)).items)).toEqual([
       'verified history',
       'after the rewind'
@@ -215,32 +215,32 @@ describe('a rewind in doubt while its agent keeps running', () => {
     expect(await host.send(caller, sendParams('after the refused rewind'))).toMatchObject({
       ok: true
     })
-    expect(store.getRecord(SESSION)?.rewind?.phase).toBe('refused')
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
+    expect(store.getRecord(SESSION)?.rewind?.phase).toBe('refused')
   })
 
-  it('refuses the send while recovery stays unknown, and decides its Retry afresh once settled', async () => {
+  it('rejects an accepted send while recovery stays unknown, then a new send retries', async () => {
     await rewindInDoubtWithLiveChild()
     recoverRewind.mockResolvedValueOnce({ ok: false, reason: 'outcome-unknown' })
     const id = hostTestOperationId()
 
     expect(await host.send(caller, sendParams('typed during the doubt', id))).toMatchObject({
-      ok: false,
-      refusal: {
-        code: 'agent_session_operation_unknown',
-        details: { reason: 'rewindUnconfirmed', rewindReason: 'outcome-unknown' }
-      }
+      ok: true
     })
+    await vi.waitFor(async () =>
+      expect(
+        (await host.journalSnapshot(SESSION)).submissions.find(
+          (entry) => entry.clientMessageId === id
+        )?.dispatchState
+      ).toBe('rejected')
+    )
     expect(store.getRecord(SESSION)?.rewind?.phase).toBe('prepared')
     expect(dispatch).not.toHaveBeenCalled()
 
-    // The Retry keeps the id; the provider now answers, so the same id is sent.
-    expect(await host.send(caller, sendParams('typed during the doubt', id))).toMatchObject({
-      ok: true,
-      replayed: false
-    })
-    expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed')
+    expect((await host.send(caller, sendParams('typed during the doubt', id))).ok).toBe(true)
+    expect(await host.send(caller, sendParams('retried after doubt'))).toMatchObject({ ok: true })
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
+    expect(store.getRecord(SESSION)?.rewind?.phase).toBe('completed')
   })
 
   it('leaves /clear its own settled refusal: nothing ran, and it mints a fresh id per attempt', async () => {

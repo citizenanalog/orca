@@ -128,15 +128,11 @@ afterEach(async () => {
  *  settled; a start that cannot settle it is stopped in a step of its own. */
 async function attachAndStart(fence: number | null) {
   const attached = await host.attach(caller, hostTestAttachParams(fence))
-  const { serialize } = host.collaboratorsForTests()
-  await serialize(HOST_TEST_SESSION, async () => {})
-  await serialize(HOST_TEST_SESSION, async () => {})
+  await vi.waitFor(() => expect(child()?.phase).not.toBe('starting'))
   return attached
 }
 
-function startedChild() {
-  return host.collaboratorsForTests().sessions.get(HOST_TEST_SESSION)?.child ?? null
-}
+const child = () => host.collaboratorsForTests().sessions.get(HOST_TEST_SESSION)?.child ?? null
 
 async function seed(acceptedSubmissions = false) {
   expect(await host.attach(caller, hostTestAttachParams(null))).toMatchObject({ ok: true })
@@ -258,7 +254,7 @@ describe('host rewind', () => {
     expect(
       await attachAndStart(store.getRecord(HOST_TEST_SESSION)!.lease.runtimeFence)
     ).toMatchObject({ ok: true })
-    expect(startedChild()).toBeNull()
+    expect(child()).toBeNull()
     expect(store.getRecord(HOST_TEST_SESSION)?.rewind?.phase).toBe('prepared')
     expect(
       await attachAndStart(store.getRecord(HOST_TEST_SESSION)!.lease.runtimeFence)
@@ -318,6 +314,9 @@ describe('host rewind', () => {
     )
     await vi.waitFor(() => expect(refused).toHaveBeenCalled())
     refused.mockRestore()
+    await vi.waitFor(() =>
+      expect(host.collaboratorsForTests().sessions.get(HOST_TEST_SESSION)?.child).toBeNull()
+    )
 
     expect(await host.rewind(caller, request)).toMatchObject({ ok: true })
     expect((await host.journalSnapshot(HOST_TEST_SESSION)).items).toHaveLength(1)
@@ -383,7 +382,7 @@ describe('host rewind', () => {
     })
     expect(rewind).not.toHaveBeenCalled()
   })
-  it('keeps a failed hydration epoch intact and blocks sends and duplicate rewind while it stays unknown', async () => {
+  it('keeps a failed hydration epoch intact and rejects delivery while it stays unknown', async () => {
     const target = await seed()
     const request = await params(target)
     const before = await host.journalSnapshot(HOST_TEST_SESSION)
@@ -394,7 +393,7 @@ describe('host rewind', () => {
       ok: false,
       refusal: { code: 'agent_session_operation_unknown' }
     })
-    // The send asks the provider first; it still cannot say.
+    // The send is accepted, then delivery asks the provider and cannot proceed.
     recoverRewind.mockResolvedValueOnce({ ok: false, reason: 'outcome-unknown' })
     const body = hostTestMessage('new prompt')
     const envelope = {
@@ -405,17 +404,27 @@ describe('host rewind', () => {
         fields: { body }
       })
     }
-    expect(await host.send(caller, { envelope, body })).toMatchObject({
-      ok: false,
-      refusal: { rewindReason: 'outcome-unknown' }
+    const accepted = await host.send(caller, { envelope, body })
+    expect(accepted).toMatchObject({ ok: true })
+    await vi.waitFor(async () => {
+      const rows = (await host.journalSnapshot(HOST_TEST_SESSION)).submissions
+      expect(
+        rows.find((row) => row.clientMessageId === envelope.clientOperationId)?.dispatchState
+      ).toBe('rejected')
     })
+    expect(await host.send(caller, { envelope, body })).toMatchObject({ ok: true, replayed: true })
     expect(adapter.dispatch).not.toHaveBeenCalled()
     expect(
       await attachAndStart(store.getRecord(HOST_TEST_SESSION)!.lease.runtimeFence)
     ).toMatchObject({ ok: true })
     expect(store.getRecord(HOST_TEST_SESSION)?.rewind?.phase).toBe('completed')
     expect(await host.rewind(caller, request)).toMatchObject({ ok: true, replayed: true })
-    expect(rewind).toHaveBeenCalledTimes(1)
+    const retried = await host.send(caller, {
+      body,
+      envelope: { ...envelope, clientOperationId: hostTestOperationId() }
+    })
+    expect(retried).toMatchObject({ ok: true, replayed: false })
+    expect(retried.ok && retried.value.clientMessageId).not.toBe(envelope.clientOperationId)
   })
 
   it('clears an unapplied prepared rewind after observing the target still present', async () => {
@@ -786,7 +795,7 @@ describe('host rewind', () => {
       expect(
         await attachAndStart(store.getRecord(HOST_TEST_SESSION)!.lease.runtimeFence)
       ).toMatchObject({ ok: true })
-      expect(startedChild()).toBeNull()
+      expect(child()).toBeNull()
       expect(replace).not.toHaveBeenCalled()
       replace.mockRestore()
       expect(store.getRecord(HOST_TEST_SESSION)?.rewind?.expectedEpoch).toBe(before.cursor.epoch)

@@ -1,24 +1,34 @@
-// The acquire each session has in flight, owned by the host that runs it, or another provider wait
-// its queue is on (an option write). The queue runs one step at a time, so a session has at most
-// one; a close, a Stop admitted now, quit, or the startup limit aborts it from outside the queue
-// instead of waiting behind a provider that may never answer.
+// The provider work a session has in flight, shared by concurrent users outside admission. A
+// close, Stop, quit, or startup limit aborts it without waiting behind provider I/O.
 
 export class StructuredAgentSessionAcquireAborts {
-  private readonly inFlight = new Map<string, AbortController>()
+  private readonly inFlight = new Map<string, { controller: AbortController; users: number }>()
   /** Set by quit: the host is going away, so an attach that begins after it starts aborted. */
   private quitReason: Error | null = null
 
   /** For the attach about to run; `end` once it settles. */
   begin(sessionId: string): { signal: AbortSignal; end: () => void } {
-    const controller = new AbortController()
-    if (this.quitReason) {
-      controller.abort(this.quitReason)
+    let held = this.inFlight.get(sessionId)
+    if (!held || held.controller.signal.aborted) {
+      const controller = new AbortController()
+      if (this.quitReason) {
+        controller.abort(this.quitReason)
+      }
+      held = { controller, users: 0 }
+      this.inFlight.set(sessionId, held)
     }
-    this.inFlight.set(sessionId, controller)
+    held.users += 1
+    const current = held
+    let ended = false
     return {
-      signal: controller.signal,
+      signal: current.controller.signal,
       end: () => {
-        if (this.inFlight.get(sessionId) === controller) {
+        if (ended) {
+          return
+        }
+        ended = true
+        current.users -= 1
+        if (current.users === 0 && this.inFlight.get(sessionId) === current) {
           this.inFlight.delete(sessionId)
         }
       }
@@ -27,14 +37,16 @@ export class StructuredAgentSessionAcquireAborts {
 
   /** A no-op when the session has nothing in flight. */
   abort(sessionId: string, reason: string | Error): void {
-    this.inFlight.get(sessionId)?.abort(typeof reason === 'string' ? new Error(reason) : reason)
+    this.inFlight
+      .get(sessionId)
+      ?.controller.abort(typeof reason === 'string' ? new Error(reason) : reason)
   }
 
   /** Quit: every start under way stops, and so does any the attach drain still runs. */
   abortAll(reason: string): void {
     this.quitReason ??= new Error(reason)
-    for (const controller of this.inFlight.values()) {
-      controller.abort(this.quitReason)
+    for (const held of this.inFlight.values()) {
+      held.controller.abort(this.quitReason)
     }
   }
 }

@@ -15,17 +15,26 @@ import type { StructuredAgentSessionClientDelivery } from './structured-agent-se
 import { StructuredAgentSessionDeliveryLoop } from './structured-agent-session-delivery-loop'
 import { structuredAgentSessionCommandRunning } from './structured-agent-session-command-turn'
 import type { StructuredAgentSessionResumeOutcome } from './structured-agent-session-agent-start'
+import type { StructuredAgentSessionStartupAttempts } from './structured-agent-session-startup-attempt'
 import type {
   StructuredAgentSessionHostDeps,
-  StructuredAgentSessionHostSession
+  StructuredAgentSessionHostSession,
+  StructuredAgentSessionProviderChildIdentity
 } from './structured-agent-session-host-types'
 import { structuredAgentSessionConversationFence } from './structured-agent-session-provider-child'
 import { structuredAgentSessionFailureWordsContext } from './structured-agent-session-send-preparation'
 import { recoverStructuredRewind } from './structured-rewind-recovery'
-import { retireSignedOutStructuredAgentSessionChild } from './structured-agent-session-signed-out-child'
+import {
+  noteSignedOutStructuredAgentSessionChild,
+  retireSignedOutStructuredAgentSessionChild
+} from './structured-agent-session-signed-out-child'
 
 export type StructuredAgentSessionConversationDelivery = {
   loop: StructuredAgentSessionDeliveryLoop
+  recoverRewind: (
+    sessionId: string,
+    child: StructuredAgentSessionProviderChildIdentity
+  ) => Promise<boolean>
   /** For a caller inside the session's serialize. */
   open: (
     sessionId: string,
@@ -52,6 +61,7 @@ export function createStructuredAgentSessionConversationDelivery(input: {
   sessions: Map<string, StructuredAgentSessionHostSession>
   serialize: <T>(sessionId: string, task: () => Promise<T>) => Promise<T>
   trackStart: <T>(start: Promise<T>) => Promise<T>
+  startupAttempts: Pick<StructuredAgentSessionStartupAttempts, 'wait'>
   /** Starts a child for `startedFor`, the queued message at the head, if the session has none. */
   ensureProviderChild: (
     sessionId: string,
@@ -65,12 +75,53 @@ export function createStructuredAgentSessionConversationDelivery(input: {
   >
 }): StructuredAgentSessionConversationDelivery {
   const { deps, sessions } = input
+  const recoverRewind = async (
+    sessionId: string,
+    selected: StructuredAgentSessionProviderChildIdentity
+  ): Promise<boolean> => {
+    const session = sessions.get(sessionId)
+    const child = session?.child
+    if (
+      !session ||
+      !child ||
+      child.generation !== selected.generation ||
+      child.fence !== selected.fence ||
+      child.close
+    ) {
+      return false
+    }
+    const rewind = deps.store.getRecord(sessionId)?.rewind
+    if (rewind?.phase !== 'prepared' && rewind?.phase !== 'provider-succeeded') {
+      return true
+    }
+    try {
+      await recoverStructuredRewind(
+        deps,
+        sessionId,
+        session.journal,
+        child.fence,
+        deps.adapter,
+        () => deps.now?.() ?? Date.now()
+      )
+    } catch (error) {
+      deps.logger.warn('settling an uncertain rewind before delivery failed', {
+        scope: 'rewind-recovery',
+        sessionId,
+        error
+      })
+      return false
+    }
+    const current = deps.store.getRecord(sessionId)?.rewind
+    return current?.phase !== 'prepared' && current?.phase !== 'provider-succeeded'
+  }
   const loop = new StructuredAgentSessionDeliveryLoop({
     sessions,
     adapter: deps.adapter,
     agents: deps.agents,
     serialize: input.serialize,
     trackStart: input.trackStart,
+    startupAttempts: input.startupAttempts,
+    recoverRewind,
     ensureProviderChild: async (sessionId, startedFor) => {
       // A send waiting on a person's Stop is not handed over yet; the step after the Stop decides.
       const session = input.clientDelivery.readStopping(sessionId)
@@ -127,6 +178,10 @@ export function createStructuredAgentSessionConversationDelivery(input: {
   }
   const wakesQueued = new Set<string>()
   const afterCommit = (sessionId: string, journal: AgentSessionJournal): void => {
+    const session = sessions.get(sessionId)
+    if (session?.child?.phase === 'ready' && !session.child.signedOutAt) {
+      noteSignedOutStructuredAgentSessionChild(session, deps.adapter.startUnavailable?.(sessionId))
+    }
     if (
       wakesQueued.has(sessionId) ||
       structuredAgentSessionCommandRunning(journal) ||
@@ -170,6 +225,7 @@ export function createStructuredAgentSessionConversationDelivery(input: {
   })
   return {
     loop,
+    recoverRewind,
     afterCommit,
     afterSettleEdge: (sessionId, journal) => {
       input.clientDelivery.publishStatus(sessionId)

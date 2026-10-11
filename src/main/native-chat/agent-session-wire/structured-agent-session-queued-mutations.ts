@@ -32,10 +32,7 @@ import {
   type StructuredAgentSessionMutationContext
 } from './structured-agent-session-mutation-context'
 import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
-import {
-  openForWrite,
-  structuredAgentSessionSendBlock
-} from './structured-agent-session-send-preparation'
+import { openForWrite } from './structured-agent-session-send-preparation'
 import type { AgentSessionTurnContext, TurnOutcome } from './structured-agent-session-turns'
 
 function invalid(message: string): {
@@ -130,9 +127,6 @@ export function sendQueuedStructuredAgentMessage(
       // FIFO order and the stored hold, which the consume below clears).
       const record = context.deps.store.getRecord(ctx.sessionId)
       const hold = structuredQueueHold({ journal: ctx.journal, record, fence: ctx.fence })
-      if (hold === 'blocked') {
-        return structuredAgentSessionSendBlock(record) ?? invalid('This conversation cannot send.')
-      }
       if (hold === 'prompt') {
         return invalid('Answer the pending request before sending this message.')
       }
